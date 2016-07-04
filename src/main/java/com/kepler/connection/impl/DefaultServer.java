@@ -310,7 +310,7 @@ public class DefaultServer {
 					return DefaultServer.this.response.response(request.ack(), DefaultServer.this.exported.get(request.service()).invoke(request), request.serial());
 				} catch (Throwable e) {
 					// 业务异常
-					DefaultServer.LOGGER.error(e.getMessage(), e);
+					DefaultServer.LOGGER.error("[Trace]" + request.get(Trace.TRACE) + "[Message]" + e.getMessage(), e);
 					return DefaultServer.this.response.throwable(request.ack(), e, request.serial());
 				} finally {
 					DefaultServer.this.promotion.record(request, this.running);
