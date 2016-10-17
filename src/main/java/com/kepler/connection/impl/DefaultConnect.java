@@ -4,9 +4,9 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -41,6 +41,7 @@ import com.kepler.traffic.Traffic;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ChannelFactory;
 import io.netty.buffer.PooledByteBufAllocator;
+import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
@@ -52,6 +53,7 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.codec.LengthFieldPrepender;
+import io.netty.util.AttributeKey;
 
 /**
  * Client 2 Service Connection
@@ -60,6 +62,8 @@ import io.netty.handler.codec.LengthFieldPrepender;
  */
 public class DefaultConnect implements Connect {
 
+	private static final AttributeKey<Acks> ACK_KEY = AttributeKey.newInstance("acks");
+	
 	/**
 	 * 连接超时
 	 */
@@ -311,6 +315,7 @@ public class DefaultConnect implements Connect {
 			DefaultConnect.LOGGER.info("Connect active (" + DefaultConnect.this.local + " to " + this.target + ") ...");
 			// 初始化赋值
 			(this.ctx = ctx).fireChannelActive();
+			this.ctx.attr(ACK_KEY).set(new Acks());
 		}
 
 		public void channelInactive(ChannelHandlerContext ctx) throws Exception {
@@ -338,17 +343,40 @@ public class DefaultConnect implements Connect {
 			}
 		}
 
-		public Object invoke(Request request) throws Throwable {
+		public Object invoke(final Request request) throws Throwable {
 			// DefaultConnect.this.token.set(request, this.target.token())增加Token
-			AckFuture future = new AckFuture(DefaultConnect.this.collector, DefaultConnect.this.local, this.target, DefaultConnect.this.token.set(request, this), DefaultConnect.this.profiles, DefaultConnect.this.quiet);
+			final AckFuture future = new AckFuture(DefaultConnect.this.collector, DefaultConnect.this.local, this.target, DefaultConnect.this.token.set(request, this), DefaultConnect.this.profiles, DefaultConnect.this.quiet);
 			try {
 				// 加入ACK -> 发送消息 -> 等待ACK
-				this.ctx.writeAndFlush(DefaultConnect.this.acks.put(future).request()).addListener(ExceptionListener.TRACE);
+				if (this.ctx.channel().eventLoop().inEventLoop()) {
+					this.ctx.writeAndFlush(this.ctx.channel().attr(ACK_KEY).get().put(future).request()).addListener(ExceptionListener.TRACE);
+				} else {
+					this.ctx.channel().eventLoop().execute(new Runnable() {
+
+						@Override
+						public void run() {
+							InvokerHandler.this.ctx.writeAndFlush(InvokerHandler.this.ctx.attr(ACK_KEY).get().put(future).request())
+								.addListener(ExceptionListener.TRACE);
+						}
+						
+					});
+				}
 				// 如果为Future或@Async则立即返回, 负责线程等待
 				return future.request().async() ? future : future.get();
 			} catch (Throwable exception) {
 				// 任何异常均释放ACK
-				DefaultConnect.this.acks.remove(request.ack());
+				if (this.ctx.channel().eventLoop().inEventLoop()) {
+					DefaultConnect.this.acks.remove(request.ack());
+				} else {
+					this.ctx.channel().eventLoop().execute(new Runnable() {
+
+						@Override
+						public void run() {
+							InvokerHandler.this.ctx.attr(ACK_KEY).get().remove(request.ack());
+						}
+						
+					});
+				}
 				// Timeout处理
 				this.timeout(future, exception);
 				throw exception;
@@ -370,10 +398,26 @@ public class DefaultConnect implements Connect {
 		}
 
 		@Override
-		public void channelRead(ChannelHandlerContext ctx, Object message) throws Exception {
-			Response response = Response.class.cast(message);
+		public void channelRead(final ChannelHandlerContext ctx, Object message) throws Exception {
+			final Response response = Response.class.cast(message);
 			// 移除ACK
-			AckFuture future = DefaultConnect.this.acks.remove(response.ack());
+			if (ctx.channel().eventLoop().inEventLoop()) {
+				doChannelRead(ctx.channel(), response);
+			} else {
+				ctx.channel().eventLoop().execute(new Runnable() {
+
+					@Override
+					public void run() {
+						doChannelRead(ctx.channel(), response);
+					}
+					
+				});
+			}
+			
+		}
+
+		private void doChannelRead(Channel channel, Response response) {
+			AckFuture future = channel.attr(ACK_KEY).get().remove(response.ack());
 			// 如获取不到ACK表示已超时
 			if (future != null) {
 				future.response(response);
@@ -454,7 +498,7 @@ public class DefaultConnect implements Connect {
 
 	private class Acks {
 
-		private final Map<Bytes, AckFuture> waitings = new ConcurrentHashMap<Bytes, AckFuture>();
+		private final Map<Bytes, AckFuture> waitings = new HashMap<Bytes, AckFuture>();
 
 		public AckFuture put(AckFuture future) {
 			this.waitings.put(new Bytes(future.request().ack()), future);
