@@ -10,7 +10,7 @@ import com.kepler.header.HeadersContext;
  */
 public class ThreadHeaders implements HeadersContext {
 
-	static final ThreadLocal<Headers> HEADERS = new ThreadLocal<Headers>() {
+	public static final ThreadLocal<Headers> HEADERS = new ThreadLocal<Headers>() {
 		protected Headers initialValue() {
 			// Create on get() or release()
 			return new LazyHeaders();

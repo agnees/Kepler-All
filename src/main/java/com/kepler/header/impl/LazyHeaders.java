@@ -1,16 +1,12 @@
 package com.kepler.header.impl;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
-
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.kepler.config.PropertiesUtils;
 import com.kepler.header.Headers;
 import com.kepler.org.apache.commons.lang.StringUtils;
 import com.kepler.org.apache.commons.lang.builder.ToStringBuilder;
+
+import java.util.*;
 
 /**
  * 线程不安全
@@ -48,6 +44,11 @@ public class LazyHeaders implements Headers {
 			this.headers = new HashMap<String, String>();
 			this.headers.putAll(headers.get());
 		}
+	}
+
+	@Override
+	protected Object clone() throws CloneNotSupportedException {
+		return new LazyHeaders(this);
 	}
 
 	/**
